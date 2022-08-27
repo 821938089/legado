@@ -1,0 +1,88 @@
+name: Debug Build
+
+on:
+  push:
+    branches:
+      - master
+    paths:
+      - '**'
+      - '!**/assets/**'
+      - '!**.md'
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.set-ver.outputs.version }}
+      versionL: ${{ steps.set-ver.outputs.versionL }}
+      lanzou: ${{ steps.check.outputs.lanzou }}
+      telegram: ${{ steps.check.outputs.telegram }}
+    steps:
+      - id: set-ver
+        run: |
+          echo "::set-output name=version::$(date -d "8 hour" -u +3.%y.%m%d%H)"
+          echo "::set-output name=versionL::$(date -d "8 hour" -u +3.%y.%m%d%H%M)"
+      - id: check
+        run: |
+          if [ ${{ secrets.LANZOU_ID }} ]; then
+            echo "::set-output name=lanzou::yes"
+          fi
+          if [ ${{ secrets.BOT_TOKEN }} ]; then
+            echo "::set-output name=telegram::yes"
+          fi
+
+  build:
+    needs: prepare
+    strategy:
+      matrix:
+        product: [ app, google ]
+        type: [ release ]
+      fail-fast: false
+    runs-on: ubuntu-latest
+    env:
+      product: ${{ matrix.product }}
+      type: ${{ matrix.type }}
+      VERSION: ${{ needs.prepare.outputs.version }}
+      VERSIONL: ${{ needs.prepare.outputs.versionL }}
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+      - uses: actions/cache@v3
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-legado-${{ hashFiles('**/updateLog.md') }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: |
+            ${{ runner.os }}-legado-${{ hashFiles('**/updateLog.md') }}-
+      - name: Clear 18PlusList.txt
+        run: |
+          echo "清空18PlusList.txt"
+          echo "">$GITHUB_WORKSPACE/app/src/main/assets/18PlusList.txt
+      - name: Build With Gradle
+        run: |
+          if [ ${{ env.type }} == 'release' ]; then
+            typeName="原包名"
+          else
+            typeName="共存"
+            sed "s/'.release'/'.releaseA'/" $GITHUB_WORKSPACE/app/build.gradle  -i
+            sed 's/.release/.releaseA/'     $GITHUB_WORKSPACE/app/google-services.json -i
+          fi
+          echo "统一版本号"
+          sed "/def version/c def version = \"${{ env.VERSION }}\"" $GITHUB_WORKSPACE/app/build.gradle  -i
+          echo "开始${{ env.product }}$typeName构建"
+          chmod +x gradlew
+          ./gradlew assemble${{ env.product }}debug --build-cache --parallel --daemon --warning-mode all
+          echo "修改文件名"
+          mkdir -p ${{ github.workspace }}/apk/
+          for file in `ls ${{ github.workspace }}/app/build/outputs/apk/*/*/*.apk`; do
+            mv "$file" ${{ github.workspace }}/apk/legado_debug_${{ env.product }}_${{ env.VERSIONL }}_$typeName.apk
+          done
+      - name: Upload App To Artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: legado.${{ env.product }}.${{ env.type }}
+          path: ${{ github.workspace }}/apk/*.apk
